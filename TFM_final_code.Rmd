@@ -1,0 +1,2292 @@
+---
+title: "TFM_Viktoriya_Dushko_final_code"
+output: html_document
+date: "2025-05-30"
+---
+
+```{r, echo=FALSE, warning=FALSE}
+setwd("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack")
+```
+
+```{r, warning=FALSE}
+pacman::p_load(tidyverse, ggplot2, lubridate, zoo, readxl,
+               httr, rlist, jsonlite, tidyjson, gganimate, lubridate,
+               xts, PerformanceAnalytics, PortfolioAnalytics, tseries,
+               ggrepel, gridExtra, maptools, doBy, gpclib, RColorBrewer,
+               corrplot, ggridges, scales, viridis, ggpubr, stringr,
+               ggcorrplot, magrittr, grid)
+
+write.png<- function(object, filename, width=5, height=4, pointsize=12, res=300){
+  png(filename= filename, type="cairo",units="in", width=width, height=height,
+      pointsize=pointsize, res=res)
+  plot(object)
+  dev.off()
+  object
+}
+```
+
+```{r}
+mytheme <- function(base_size = 12, base_family = ""){
+  theme_bw(base_size = base_size, base_family = base_family) %+replace%
+    theme(
+      panel.border     = element_blank(),
+      axis.line        = element_blank(),
+      axis.ticks = element_line(color = "grey"),
+      panel.grid.major = element_line(),
+      panel.grid.major.x = element_line(colour = "grey", size = 0.1, linetype = "dotted"),
+      panel.grid.major.y = element_line(colour = "grey", size = 0.1, linetype = "dotted"),
+      panel.grid.minor = element_line(),
+      panel.grid.minor.x = element_line(colour = "grey", size = 0.1, linetype = "dotted"),
+      panel.grid.minor.y = element_line(colour = "grey", size = 0.1, linetype = "dotted"),
+      strip.background = element_blank(),
+      legend.key       = element_blank()
+    )
+}
+```
+
+```{r}
+xts2df <- function(x) {
+  data.frame(date=index(x), coredata(x))
+}
+
+# display color scale
+display.brewer.pal(n = 3, name = "Set1")
+
+# assign colors # ggplot2 default for techs
+timecol<- brewer.pal(n = 3, name = "Set2") # for timescales
+eucol<- brewer.pal(n = 3, name = "Dark2") # for EU
+cols<- viridis(3) # for spatial configurations CWE NWE Europe
+```
+
+Part 1. Descriptive statistics 
+
+```{r}
+# _1.1. Import data with solar and wind CF ####
+wind_current<- read.csv("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/data/ninja_wind_europe_v1.1_current_national.csv", sep = ",", header = T)
+wind_future<- read.csv("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/data/ninja_wind_future_cf.csv", sep = ",", header = T)
+wind_both<- read.csv("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/data/ninja_wind_europe_v1.1_current_on-offshore.csv",  sep = ",", header = T)
+solar_merra2<- read.csv("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/data/ninja_pv_europe_v1.1_merra2.csv", sep = ",", header = T)
+```
+
+```{r}
+# extract dates (different for wind and solar)
+# for the three types of wind: Hourly periodicity from 1980-01-01 to 2016-12-31 23:00:00
+dates<- as.POSIXct(wind_current$time, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC")
+# for solar: Hourly periodicity from 1985-01-01 to 2016-12-31 23:00:00
+solardates<- as.POSIXct(solar_merra2$time, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC")
+```
+
+```{r}
+# convert to xts
+current<- xts(wind_current[,-1], order.by = dates, tz = "UTC")
+future<- xts(wind_future[,-1], order.by = dates, tz = "UTC")
+both<- xts(wind_both[,-1], order.by = dates, tz = "UTC")
+solar<- xts(solar_merra2[,-1], order.by = solardates, tz = "UTC")
+```
+
+```{r}
+#Extracting info for wind and solar CF
+
+##Wind
+
+wind_current_data <- wind_current %>%
+  mutate(date = as.Date(time),  # Extract date
+         hour = hour(time))      # Extract hour
+         
+head(wind_current_data)        
+
+##solar
+
+solar_current_data <- solar_merra2 %>%
+  mutate(date = as.Date(time),  # Extract date
+         hour = hour(time))      # Extract hour
+         
+head(solar_current_data) 
+```
+
+```{r}
+#choosing Spain for analysis
+
+wind_ES <- wind_current_data %>%
+  select(ES, date, hour)
+
+# View the result
+head(wind_ES)
+
+solar_ES <- solar_current_data %>%
+  select(ES, date, hour)
+
+# View the result
+head(solar_ES)
+```
+
+```{r}
+#Add a year column
+wind_ES <- wind_ES %>%
+  mutate(year = year(date))
+
+#View the updated tibble
+head(wind_ES)
+
+#Add a year column
+solar_ES <- solar_ES %>%
+  mutate(year = year(date))
+
+#View the updated tibble
+head(solar_ES)
+```
+
+```{r}
+#taking last 5 years for the analysis
+
+# choosing the years
+wind_ES_filtr_5 <- wind_ES %>%
+  filter(year >= 2012 & year <= 2016)
+
+# View the result
+head(wind_ES_filtr_5)
+
+# choosing the years
+solar_ES_filtr_5 <- solar_ES %>%
+  filter(year >= 2012 & year <= 2016)
+
+# View the result
+head(solar_ES_filtr_5)
+```
+
+```{r}
+# Group the data by hour 
+hourly_wind_ES_5 <- wind_ES_filtr_5 %>%
+  group_by(hour, year) %>%
+  summarise(
+    cf = mean(ES),  # mean capacity per hour
+    .groups = "drop"
+  )
+head(hourly_wind_ES_5)
+
+# Group the data by hour 
+hourly_solar_ES_5 <- solar_ES_filtr_5 %>%
+  group_by(hour, year) %>%
+  summarise(
+    cf = mean(ES),  # mean capacity per hour
+    .groups = "drop"
+  )
+head(hourly_solar_ES_5)
+```
+
+```{r}
+hourly_wind_ES_metrics_5 <- hourly_wind_ES_5 %>%
+  # Calculate sd, cv and cf
+  mutate(
+    sd = 100 * sd(cf, na.rm = TRUE),  # Standard deviation
+    cv = sd(cf) / mean(cf),  # Coefficient of variation
+    cf_percent = 100 * cf  # Multiply mean_cf_wind by 100 for cf
+  )
+
+# View the result
+head(hourly_wind_ES_metrics_5)
+
+hourly_solar_ES_metrics_5 <- hourly_solar_ES_5 %>%
+  # Calculate sd, cv and cf
+  mutate(
+    sd = 100 * sd(cf, na.rm = TRUE),  # Standard deviation
+    cv = sd(cf) / cf,  # Coefficient of variation
+    cf_percent = 100 * cf  # Multiply mean_cf_wind by 100 for cf
+  )
+
+# View the result
+head(hourly_solar_ES_metrics_5)
+```
+
+```{r}
+# Add the new column 'tech' and set its value to 'wind' for all rows
+hourly_wind_ES_metrics_5 <- hourly_wind_ES_metrics_5 %>%
+  mutate(tech = "wind")
+
+# View the result
+head(hourly_wind_ES_metrics_5)
+
+# Add the new column 'tech' and set its value to 'solar' for all rows
+hourly_solar_ES_metrics_5 <- hourly_solar_ES_metrics_5 %>%
+  mutate(tech = "solar")
+
+# View the result
+head(hourly_solar_ES_metrics_5)
+```
+
+```{r}
+#choosing Norway for analysis
+
+wind_NO <- wind_current_data %>%
+  select(NO, date, hour)
+
+# View the result
+head(wind_NO)
+
+solar_NO <- solar_current_data %>%
+  select(NO, date, hour)
+
+# View the result
+head(solar_NO)
+```
+
+```{r}
+#choosing Greece for analysis
+
+wind_GR <- wind_current_data %>%
+  select(GR, date, hour)
+
+# View the result
+head(wind_GR)
+
+solar_GR <- solar_current_data %>%
+  select(GR, date, hour)
+
+# View the result
+head(solar_GR)
+```
+
+```{r}
+#Add a year column
+wind_NO <- wind_NO %>%
+  mutate(year = year(date))
+
+#View the updated tibble
+head(wind_NO)
+
+#Add a year column
+solar_NO <- solar_NO %>%
+  mutate(year = year(date))
+
+#View the updated tibble
+head(solar_NO)
+```
+
+```{r}
+#Add a year column
+wind_GR <- wind_GR %>%
+  mutate(year = year(date))
+
+#View the updated tibble
+head(wind_GR)
+
+
+#Add a year column
+solar_GR <- solar_GR %>%
+  mutate(year = year(date))
+
+#View the updated tibble
+head(solar_GR)
+```
+
+```{r}
+# choosing the years
+wind_NO_filtr <- wind_NO %>%
+  filter(year >= 2012 & year <= 2016)
+
+# View the result
+head(wind_NO_filtr)
+
+# choosing the years
+solar_NO_filtr <- solar_NO %>%
+  filter(year >= 2012 & year <= 2016)
+
+# View the result
+head(solar_NO_filtr)
+```
+
+```{r}
+# choosing the years
+wind_GR_filtr <- wind_GR %>%
+  filter(year >= 2012 & year <= 2016)
+
+# View the result
+head(wind_GR_filtr)
+
+# choosing the years
+solar_GR_filtr <- solar_GR %>%
+  filter(year >= 2012 & year <= 2016)
+
+# View the result
+head(solar_GR_filtr)
+```
+
+```{r}
+# Group the data by hour 
+hourly_wind_NO <- wind_NO_filtr %>%
+  group_by(hour, year) %>%
+  summarise(
+    cf = mean(NO),  # mean capacity per hour
+    .groups = "drop"
+  )
+head(hourly_wind_NO)
+
+# Group the data by hour 
+hourly_solar_NO <- solar_NO_filtr %>%
+  group_by(hour, year) %>%
+  summarise(
+    cf = mean(NO),  # mean capacity per hour
+    .groups = "drop"
+  )
+head(hourly_solar_NO)
+```
+
+```{r}
+# Group the data by hour 
+hourly_wind_GR <- wind_GR_filtr %>%
+  group_by(hour, year) %>%
+  summarise(
+    cf = mean(GR),  # mean capacity per hour
+    .groups = "drop"
+  )
+head(hourly_wind_GR)
+
+# Group the data by hour 
+hourly_solar_GR <- solar_GR_filtr %>%
+  group_by(hour, year) %>%
+  summarise(
+    cf = mean(GR),  # mean capacity per hour
+    .groups = "drop"
+  )
+head(hourly_solar_GR)
+```
+
+```{r}
+hourly_wind_NO_metrics <- hourly_wind_NO %>%
+  # Calculate sd, cv and cf
+  mutate(
+    sd = 100 * sd(cf, na.rm = TRUE),  # Standard deviation
+    cv = sd(cf) / mean(cf),  # Coefficient of variation
+    cf_percent = 100 * cf  # Multiply mean_cf_wind by 100 for cf
+  )
+
+# View the result
+head(hourly_wind_NO_metrics)
+
+hourly_solar_NO_metrics <- hourly_solar_NO %>%
+  # Calculate sd, cv and cf
+  mutate(
+    sd = 100 * sd(cf, na.rm = TRUE),  # Standard deviation
+    cv = sd(cf) / cf,  # Coefficient of variation
+    cf_percent = 100 * cf  # Multiply mean_cf_wind by 100 for cf
+  )
+
+# View the result
+head(hourly_solar_NO_metrics)
+```
+
+```{r}
+hourly_wind_GR_metrics <- hourly_wind_GR %>%
+  # Calculate sd, cv and cf
+  mutate(
+    sd = 100 * sd(cf, na.rm = TRUE),  # Standard deviation
+    cv = sd(cf) / mean(cf),  # Coefficient of variation
+    cf_percent = 100 * cf  # Multiply mean_cf_wind by 100 for cf
+  )
+
+# View the result
+head(hourly_wind_GR_metrics)
+
+hourly_solar_GR_metrics <- hourly_solar_GR %>%
+  # Calculate sd, cv and cf
+  mutate(
+    sd = 100 * sd(cf, na.rm = TRUE),  # Standard deviation
+    cv = sd(cf) / cf,  # Coefficient of variation
+    cf_percent = 100 * cf  # Multiply mean_cf_wind by 100 for cf
+  )
+
+# View the result
+head(hourly_solar_GR_metrics)
+```
+
+
+```{r}
+# Add the new column 'tech' and set its value to 'wind' for all rows
+hourly_wind_NO_metrics <- hourly_wind_NO_metrics %>%
+  mutate(tech = "wind")
+
+# View the result
+head(hourly_wind_NO_metrics)
+
+# Add the new column 'tech' and set its value to 'solar' for all rows
+hourly_solar_NO_metrics <- hourly_solar_NO_metrics %>%
+  mutate(tech = "solar")
+
+# View the result
+head(hourly_solar_NO_metrics)
+```
+
+```{r}
+# Add the new column 'tech' and set its value to 'wind' for all rows
+hourly_wind_GR_metrics <- hourly_wind_GR_metrics %>%
+  mutate(tech = "wind")
+
+# View the result
+head(hourly_wind_GR_metrics)
+
+# Add the new column 'tech' and set its value to 'solar' for all rows
+hourly_solar_GR_metrics <- hourly_solar_GR_metrics %>%
+  mutate(tech = "solar")
+
+# View the result
+head(hourly_solar_GR_metrics)
+```
+
+```{r}
+# Create a line plot for wind
+es_cf_wind <- ggplot(hourly_wind_ES_metrics_5, aes(x = hour, y = cf_percent, color = factor(year))) +
+  geom_line() +
+  scale_x_continuous(breaks = 0:23) +  # Show all hours from 0 to 23
+  scale_y_continuous(breaks = seq(0, 40, by = 1)) +  # Y-axis in steps of 5
+  labs(title = "a. Wind Capacity Factor per Hour and Year - Spain",
+       x = "Hour of Day",
+       y = "Capacity Factor (%)",
+       color = "Year") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+
+es_cf_wind
+# Create a line plot for wind
+no_cf_wind <- ggplot(hourly_wind_NO_metrics, aes(x = hour, y = cf_percent, color = factor(year))) +
+  geom_line() +
+  scale_x_continuous(breaks = 0:23) +  # Ensure all hours from 0 to 23 are displayed
+  scale_y_continuous(breaks = seq(0, 40, by = 1)) +  # Y-axis in steps of 5
+  labs(title = "b.Wind Capacity Factor per Hour and Year - Norway",
+       x = "Hour of Day",
+       y = "Capacity Factor (%)",
+       color = "Year") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+no_cf_wind
+
+# Create a line plot for wind
+gr_cf_wind <- ggplot(hourly_wind_GR_metrics, aes(x = hour, y = cf_percent, color = factor(year))) +
+  geom_line() +
+  scale_x_continuous(breaks = 0:23) +  # Ensure all hours from 0 to 23 are displayed
+  scale_y_continuous(breaks = seq(0, 40, by = 1)) + 
+  labs(title = "c.Wind Capacity Factor per Hour and Year - Greece",
+       x = "Hour of Day",
+       y = "Capacity Factor (%)",
+       color = "Year") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+gr_cf_wind 
+```
+
+```{r}
+# Create a line plot for solar
+es_cf_sun <- ggplot(hourly_solar_ES_metrics_5, aes(x = hour, y = cf_percent, color = factor(year))) +
+  geom_line() +
+  scale_x_continuous(breaks = 0:23) +  # Ensure all hours from 0 to 23 are displayed
+  scale_y_continuous(breaks = seq(0, 50, by = 10)) + 
+  labs(title = "a.Solar Capacity Factor per Hour and Year - Spain",
+       x = "Hour of Day",
+       y = "Capacity Factor (%)",
+       color = "Year") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+es_cf_sun 
+
+# Create a line plot for solar
+no_cf_sun <- ggplot(hourly_solar_NO_metrics, aes(x = hour, y = cf_percent, color = factor(year))) +
+  geom_line() +
+  scale_x_continuous(breaks = 0:23) +  # Ensure all hours from 0 to 23 are displayed
+  scale_y_continuous(breaks = seq(0, 50, by = 10)) + 
+  labs(title = "b.Solar Capacity Factor per Hour and Year - Norway",
+       x = "Hour of Day",
+       y = "Capacity Factor (%)",
+       color = "Year") +
+    theme_minimal() +
+  theme(legend.position = "bottom")
+no_cf_sun
+
+# Create a line plot for solar
+gr_cf_sun <- ggplot(hourly_solar_GR_metrics, aes(x = hour, y = cf_percent, color = factor(year))) +
+  geom_line() +
+  scale_x_continuous(breaks = 0:23) +  # Ensure all hours from 0 to 23 are displayed
+  scale_y_continuous(breaks = seq(0, 50, by = 10)) + 
+  labs(title = "c.Solar Capacity Factor per Hour and Year - Greece",
+       x = "Hour of Day",
+       y = "Capacity Factor (%)",
+       color = "Year") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+gr_cf_sun
+```
+
+Hourly charts of CF and CV 
+
+```{r}
+library(xts)
+library(lubridate)
+
+# Example: Assume your xts object is named 'data_xts'
+hourly_means_wind <- aggregate(both, by = format(index(both), "%H"), FUN = mean, na.rm = TRUE)
+
+# Rename the index to represent hours clearly
+index(hourly_means_wind) <- as.numeric(index(hourly_means_wind))  # Convert "00", "01", ... to 0, 1, ...
+
+# Sort by hour (just in case)
+hourly_means_wind <- hourly_means_wind[order(index(hourly_means_wind)), ]
+head(hourly_means_wind)
+```
+
+```{r}
+#the data both is ib=n the beginning of the code
+
+# Example: Assume your xts object is named 'data_xts'
+hourly_means_solar <- aggregate(solar, by = format(index(solar), "%H"), FUN = mean, na.rm = TRUE)
+
+# Rename the index to represent hours clearly
+index(hourly_means_solar) <- as.numeric(index(hourly_means_solar))  # Convert "00", "01", ... to 0, 1, ...
+
+# Sort by hour (just in case)
+hourly_means_solar <- hourly_means_solar[order(index(hourly_means_solar)), ]
+head(hourly_means_solar)
+
+```
+
+```{r}
+library(dplyr)
+library(tibble)
+library(zoo)
+
+# Convert zoo to tibble
+hourly_means_solar_table <- as_tibble(hourly_means_solar, rownames = "time")
+
+# Compute statistics
+hourly_means_solar_stat <- hourly_means_solar_table %>%
+  mutate(
+    sd = 100 * apply(select(., -time), 1, sd, na.rm = TRUE),
+    cv = apply(select(., -time), 1, sd, na.rm = TRUE) / apply(select(., -time), 1, mean, na.rm = TRUE),
+    cf = 100 * apply(select(., -time), 1, mean, na.rm = TRUE),
+    tech = "Solar"
+  )
+
+hourly_means_solar_stat
+```
+
+```{r}
+
+# Convert zoo to tibble
+hourly_means_wind_table <- as_tibble(hourly_means_wind, rownames = "time")
+
+# Select columns for Onshore and Offshore
+onshore_cols <- names(hourly_means_wind_table)[grepl("ON", names(hourly_means_wind_table))]
+offshore_cols <- names(hourly_means_wind_table)[grepl("OFF", names(hourly_means_wind_table))]
+
+# Compute statistics for Onshore
+onshore_stats <- hourly_means_wind_table %>%
+  select(time, all_of(onshore_cols)) %>%
+  mutate(
+    sd = 100 * apply(select(., -time), 1, sd, na.rm = TRUE),
+    cv = apply(select(., -time), 1, sd, na.rm = TRUE) / apply(select(., -time), 1, mean, na.rm = TRUE),
+    cf = 100 * apply(select(., -time), 1, mean, na.rm = TRUE),
+    tech = "Onshore"
+  ) %>%
+  select(time, sd, cv, cf, tech)
+
+# Compute statistics for Offshore
+offshore_stats <- hourly_means_wind_table %>%
+  select(time, all_of(offshore_cols)) %>%
+  mutate(
+    sd = 100 * apply(select(., -time), 1, sd, na.rm = TRUE),
+    cv = apply(select(., -time), 1, sd, na.rm = TRUE) / apply(select(., -time), 1, mean, na.rm = TRUE),
+    cf = 100 * apply(select(., -time), 1, mean, na.rm = TRUE),
+    tech = "Offshore"
+  ) %>%
+  select(time, sd, cv, cf, tech)
+
+# Combine both into one table
+hourly_means_wind_final <- bind_rows(onshore_stats, offshore_stats)
+
+
+# View final structure
+head(hourly_means_wind_final)
+
+```
+
+```{r}
+# Select the desired columns
+hourly_means_solar_stat_final <- hourly_means_solar_stat %>%
+  select(time, sd, cv, cf, tech)
+
+# View the filtered table
+head(hourly_means_solar_stat_final)
+```
+
+```{r}
+# Now join the data
+stat_data_join <- bind_rows(hourly_means_solar_stat_final, hourly_means_wind_final) %>%
+  select(time, sd, cv, cf, tech)
+
+# View the result
+head(stat_data_join)
+```
+
+```{r}
+library(ggplot2)
+
+# Convert time to a factor
+stat_data_join$time <- factor(stat_data_join$time, levels = 0:23)
+
+# Plot
+techcvplot_cf_final <- ggplot(stat_data_join, aes(x = cf, y = time, color = tech, shape = tech)) +  
+  geom_point(size = 2) + 
+  scale_color_manual(values = c("Offshore" = "#619CFF",
+                                "Onshore" =  "#00BA38","Solar" = "#F8766D")) +
+  scale_y_discrete(breaks = as.character(0:23)) +  # Use scale_y_discrete for categorical time
+  scale_x_continuous(
+    breaks = seq(0, max(stat_data_join$cf, na.rm = TRUE), by = 5),  
+    labels = function(x) paste0(x, "%")  # Format labels as percentage
+  ) +
+  labs(
+    x = "Capacity Factor (%)",  # Label for x-axis
+    y = "Time (Hour)",          # Label for y-axis
+    subtitle = "a. Capacity factor (CF)"
+  ) +
+  theme_minimal() +  # Assuming 'mytheme()' is a custom theme
+  theme(legend.position = "none")  # Keep legend on the right
+  
+# View the plot
+techcvplot_cf_final
+
+```
+
+```{r}
+techcvplot_cv_final <- ggplot(stat_data_join, aes(x = cv, y = time, color = tech, shape = tech)) +  
+  geom_point(size = 2) + 
+  scale_color_manual(values = c("Offshore" = "#619CFF",
+                                "Onshore" = "#00BA38", "Solar" = "#F8766D")) +
+  scale_y_discrete(breaks = as.character(0:23)) +
+  scale_x_continuous(
+    breaks = seq(0.2, 5, by = 0.5),
+    labels = function(x) paste0(x)
+  ) +
+  labs(
+    x = "Coefficient of Variation (CV)",
+    y = "Time (Hour)",
+    subtitle = "b. Coefficient of Variation (CV)",
+    color = NULL,  # remove legend title for color
+    shape = NULL   # remove legend title for shape
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# View the plot
+techcvplot_cv_final
+```
+
+```{r}
+# mean CF and CV across hours by technology 
+mean_hourly_plot_joint <- cowplot::ggdraw(grid.arrange(techcvplot_cf_final, techcvplot_cv_final, ncol = 2)) + 
+  theme(plot.background = element_rect(fill="white", color = NA))
+```
+
+Correlation Matrix
+
+```{r}
+
+# 1.2.3.2. Countries #### 
+# correlations between countries for wind and solar separately
+wcor<- round(cor(current), 1)
+scor<- round(cor(solar), 1)
+
+f4a<- ggcorrplot(scor, hc.order = TRUE, type = "lower", outline.col = "white", title = "a. Solar")
+
+f4b<- ggcorrplot(wcor, hc.order = TRUE, type = "lower", outline.col = "white", title = "b. Wind")
+
+f4<- cowplot::ggdraw(grid.arrange(f4a, f4b, ncol = 2)) + 
+  theme(plot.background = element_rect(fill="white", color = NA))
+
+```
+
+
+
+```{r}
+# __2. Optimization ####
+
+# optimization function
+optimize_portfolio<- function(data){
+  # find min. value for which the optim. is defined
+  for (i in seq(.01, 1, .01)) {
+    if (class(tryCatch(portfolio.optim(x = data, i), 
+                       error = function(e) "chao")) == "list")
+    {min<- i 
+    break}
+  }
+  
+  # find max. value for which the optim. is defined
+  for (i in seq(.01, 1, .01)) {
+    if (class(tryCatch(portfolio.optim(x = data, i), 
+                       error=function(e) "chao")) == "list")
+    {max<- i}
+  }
+  
+  # create vectors/matrices to fill with results
+  # create grid of returns for the frontier
+  grid <- seq(from = min, to = max, length.out = 50)
+  # Create an empty matrix to store portfolio "returns" (CF)
+  returns <- matrix(NA, 50, length(data)/ncol(data))
+  # Create empty vectors to store means and std. deviations
+  means <- sds <- rep(NA, length(grid)) 
+  # Create an empty matrix to store weights
+  weights <- matrix(NA, 50, ncol(data)) 
+  names(weights)<- colnames(data)
+  
+  # run optimization model
+  for(i in 1:length(grid)) {
+    opt <- portfolio.optim(x = data, pm = grid[i]) # default is long_only (shorts = F)
+    returns[i, ]<- opt$px # matrix of portfolio "returns" (CF)
+    means[i] <- opt$pm # vector of mean portfolio capacity factor
+    sds[i] <- opt$ps # vector of portfolio sd
+    weights[i, ] <- opt$pw # matrix of weights
+  }
+  
+  # calculate sharpe ratio and weights of extreme portfolios
+  sharpe <- means/sds # Sharpe ratio 
+  
+  # portfolio shares for the three extreme portfolios
+  weights_sharpe <- weights[sharpe == max(sharpe), ] # optimal i.e. max sharpe
+  weights_minvar <- weights[sds == min(sds), ] # min. var
+  weights_maxmean <- weights[means == max(means), ] # max. return
+  
+  # returns of each of the extreme portfolios
+  returns_sharpe <- returns[sharpe == max(sharpe), ] # maxsharpr
+  returns_minvar <- returns[sds == min(sds), ] # minvar
+  returns_maxmean <- returns[means == max(means), ] # maxret
+  
+  # name weights and returns
+  names(weights_sharpe)<-names(weights_minvar)<-names(weights_maxmean)<-colnames(data)
+  names(returns_sharpe)<-names(returns_minvar)<-names(returns_maxmean)<-colnames(data)
+  
+  # return a list of results
+  opt<- list(means = means, sds = sds, sharpe = sharpe, # 1 obs/portfolio
+             weights = weights,returns = returns, # 1 matrix/portfolio
+             weights_sharpe = weights_sharpe, # weights of extreme portfolios
+             weights_minvar = weights_minvar, weights_maxmean = weights_maxmean,
+             returns_sharpe = returns_sharpe, # returns of extreme portfolios
+             returns_minvar = returns_minvar, returns_maxmean = returns_maxmean)
+}
+
+# define regions
+CWEnames<- c("BE", "NL", "LU", "FR", "DE")
+NWEnames<- c("BE", "NL", "LU", "FR", "DE",
+             "GB", "SE", "NO", "FI", "DK", "EE", "LT", "LV")
+
+```
+
+
+
+```{r, echo=FALSE, results='hide'}
+# _2.1. Wind ####
+# Three levels: CWE -> NWE -> Paneuropean
+# Central West Europe (covering Benelux, France and Germany), known as CWE
+# North-Western Europe (NWE): CWE, Great Britain, the Nordics and the Baltics
+# https://www.epexspot.com/en/marketcoupling
+
+# 2.1.1 Current ####
+
+# 2.1.1.1. Hourly ####
+
+# optimization
+CWE<- current[, CWEnames]
+NWE<- current[, NWEnames]
+
+regions<- list(CWE, NWE, current)
+str(regions)
+
+opt_list<- list()
+opt_list<- lapply(regions, optimize_portfolio)
+names(opt_list)<- c("CWE", "NWE", "Europe")
+
+str(opt_list)
+
+#Create folder Results
+
+dir.create("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/", recursive = TRUE)
+
+
+saveRDS(opt_list, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_current.rds")
+opt_list<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_current.rds")
+
+```
+
+```{r}
+# frontier
+front_list<- list()
+for (i in opt_list) {
+  # create dataframe with efficient frontier data
+  frontier<- tibble(sd = i$sds, 
+                    cf = i$means, 
+                    sr = i$sharpe)  
+  # select only the upper part of the frontier
+  cfcut<- frontier[frontier$sd == min(frontier$sd), ]$cf
+  frontier<- frontier[frontier$cf >= cfcut, ]
+  front_list[[length(front_list) + 1]]<- frontier
+}
+
+names(front_list)<- c("CWE", "NWE", "Europe")
+front_list<- Map(cbind, front_list, region = names(front_list))
+
+frontiers<- bind_rows(front_list) %>%
+  mutate(sd = 100*sd, cf = 100*cf)
+```
+
+```{r}
+# _1.2. SumStats ####
+# function to calculate mean CF and SD
+summarize_stats<- function(data){
+  data %>% fortify() %>% gather(country, cf,-Index) %>% group_by(country) %>%
+    summarize(sd = 100*sd(cf), cv = sd(cf)/mean(cf), cf = 100*mean(cf))
+    
+}
+
+datalist<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/data/data/datalist.rds")
+sumstats<- lapply(datalist, summarize_stats) %>% bind_rows(.id = "id") %>% as_tibble()
+
+saveRDS(sumstats, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/data/data/sumstats.rds")
+```
+
+
+```{r}
+# Optimal portfolio: maximum sharpe ratio
+sharpe<-  frontiers %>% group_by(region) %>%
+  filter(sr == max(sr))
+
+# current frontiers plot
+options(ggrepel.max.overlaps = Inf)
+p4c<- ggplot(frontiers, aes(x = sd, y = cf, color = as.factor(region))) + 
+  geom_line(size = 1) +
+  geom_point(data = sharpe, aes(x = sd, y = cf, color = as.factor(region)), size = 2) +
+  geom_point(data = sumstats[sumstats$id == "current", ], aes(x = sd, y = cf), 
+             inherit.aes = F, color = "darkgrey") +
+  geom_text_repel(data = sumstats[sumstats$id == "current", ], aes(x = sd, y = cf, label = country),
+                  , inherit.aes = F, , color = "darkgrey") +
+  labs(x = "Standard deviation", y = "Capacity factor (%)", subtitle = "b. Current hourly wind") +
+  annotate("text", x = 14, y = 23, label = "CWE", color = cols[1], fontface = "bold") +
+  annotate("text", x = 10, y = 26, label = "Europe", color = cols[2], fontface = "bold") +
+  annotate("text", x = 13, y = 28, label = "NWE", color = cols[3], fontface = "bold") +
+  mytheme() +
+  scale_color_manual(values = c(cols[1], cols[2], cols[3])) +
+  theme(legend.position = "none")
+
+write.png(p4c, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/wind_current.png")
+
+```
+
+```{r}
+# monthly scale
+# daily scale
+mcurrent<- apply.monthly(current, colMeans)
+tclass(mcurrent) <- "yearmon"
+mfuture<- apply.monthly(future, colMeans)
+tclass(mcurrent) <- "Date"
+mboth<- apply.monthly(both, colMeans)
+tclass(mboth) <- "Date"
+msolar<- apply.monthly(solar, colMeans)
+tclass(msolar) <- "Date"
+
+```
+
+
+```{r}
+# 2.1.1.3. Monthly ####
+
+# optimization
+CWE<- mcurrent[, CWEnames] # mcurrent
+NWE<- mcurrent[, NWEnames] # mcurrent
+
+regions<- list(CWE, NWE, mcurrent) # mcurrent
+
+
+opt_list<- list()
+opt_list<- lapply(regions, optimize_portfolio)
+names(opt_list)<- c("CWE", "NWE", "Europe")
+
+str(opt_list)
+
+saveRDS(opt_list, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_mcurrent.rds")
+opt_list<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_mcurrent.rds")
+
+# frontier
+front_list<- list()
+for (i in opt_list) {
+  # create dataframe with efficient frontier data
+  frontier<- tibble(sd = i$sds, 
+                    cf = i$means, 
+                    sr = i$sharpe)  
+  # select only the upper part of the frontier
+  cfcut<- frontier[frontier$sd == min(frontier$sd), ]$cf
+  frontier<- frontier[frontier$cf >= cfcut, ]
+  front_list[[length(front_list) + 1]]<- frontier
+}
+
+names(front_list)<- c("CWE", "NWE", "Europe")
+front_list<- Map(cbind, front_list, region = names(front_list))
+
+frontiers<- bind_rows(front_list) %>%
+  mutate(sd = 100*sd, cf = 100*cf)
+
+# Optimal portfolio: maximum sharpe ratio
+sharpe<-  frontiers %>% group_by(region) %>%
+  filter(sr == max(sr))
+
+# current frontiers plot
+options(ggrepel.max.overlaps = Inf)
+p4d<- ggplot(frontiers, aes(x = sd, y = cf, color = as.factor(region))) + 
+  geom_line(size = 1) +
+  geom_point(data = sharpe, aes(x = sd, y = cf, color = as.factor(region)), size = 2) +
+  geom_point(data = sumstats[sumstats$id == "mcurrent", ], aes(x = sd, y = cf), 
+             inherit.aes = F, color = "darkgrey") +
+  geom_text_repel(data = sumstats[sumstats$id == "mcurrent", ], aes(x = sd, y = cf, label = country),
+                  , inherit.aes = F, , color = "darkgrey") +
+  labs(x = "Standard deviation", y = "Capacity factor (%)", subtitle = "d. Current monthly wind") +
+  annotate("text", x = 8, y = 27, label = "CWE", color = cols[1], fontface = "bold") +
+  annotate("text", x = 6, y = 34, label = "Europe", color = cols[2], fontface = "bold") +
+  annotate("text", x = 7, y = 33, label = "NWE", color = cols[3], fontface = "bold") +
+  
+  mytheme() +
+  scale_color_manual(values = c(cols[1], cols[2], cols[3])) +
+  theme(legend.position = "none")
+
+write.png(p4d, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/wind_mcurrent.png")
+
+```
+
+```{r}
+# _2.2. Solar ####
+
+# 2.2.1. Hourly ####
+
+# define regions
+CWE<- solar[, CWEnames]
+NWE<- solar[, NWEnames]
+
+regions<- list(CWE, NWE, solar)
+
+# run all
+opt_list<- list()
+opt_list<- lapply(regions, optimize_portfolio)
+names(opt_list)<- c("CWE", "NWE", "Europe")
+
+str(opt_list)
+
+saveRDS(opt_list, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_solar.rds")
+opt_list<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_solar.rds")
+
+front_list<- list()
+for (i in opt_list) {
+  # create dataframe with efficient frontier data
+  frontier<- tibble(sd = i$sds, 
+                    cf = i$means, 
+                    sr = i$sharpe)  
+  # select only the upper part of the frontier
+  cfcut<- frontier[frontier$sd == min(frontier$sd), ]$cf
+  frontier<- frontier[frontier$cf >= cfcut, ]
+  front_list[[length(front_list) + 1]]<- frontier
+}
+
+names(front_list)<- c("CWE", "NWE", "Europe")
+front_list<- Map(cbind, front_list, region = names(front_list))
+
+frontiers<- bind_rows(front_list) %>%
+  mutate(sd = 100*sd, cf = 100*cf)
+sharpe<-  frontiers %>% group_by(region) %>%
+  filter(sr == max(sr))
+
+p4a<- ggplot(frontiers, aes(x = sd, y = cf, color = region)) + 
+  geom_line(size = 1) +
+  geom_point(data = sharpe, aes(x = sd, y = cf, color = region), size = 2) +
+  geom_point(data = sumstats[sumstats$id == "solar", ], aes(x = sd, y = cf), 
+             inherit.aes = F, color = "darkgrey") +
+  geom_text_repel(data = sumstats[sumstats$id == "solar", ], aes(x = sd, y = cf, label = country),
+                  , inherit.aes = F, , color = "darkgrey") +
+  labs(x = "Standard deviation", y = "Capacity factor (%)", subtitle = "a. Current hourly solar") +
+  annotate("text", x = 18.5, y = 13.5, label = "CWE", color = cols[1], fontface = "bold") +
+  annotate("text", x = 20, y = 17.5, label = "Europe", color = cols[2], fontface = "bold") +
+  annotate("text", x = 17.5, y = 13.5, label = "NWE", color = cols[3], fontface = "bold") +
+  mytheme() +
+  scale_color_manual(values = c(cols[1], cols[2], cols[3])) +
+  theme(legend.position = "none")
+
+write.png(p4a, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/solar.png")
+
+```
+
+
+```{r}
+# 2.2.3. Monthly ####
+
+# define regions
+CWE<- msolar[, CWEnames]
+NWE<- msolar[, NWEnames]
+
+regions<- list(CWE, NWE, msolar) # dim(msolar) n = 13824
+
+# run all
+opt_list<- list()
+opt_list<- lapply(regions, optimize_portfolio)
+names(opt_list)<- c("CWE", "NWE", "Europe")
+
+str(opt_list)
+
+saveRDS(opt_list, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_msolar.rds")
+opt_list<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_dsolar.rds")
+
+front_list<- list()
+for (i in opt_list) {
+  # create dataframe with efficient frontier data
+  frontier<- tibble(sd = i$sds, 
+                    cf = i$means, 
+                    sr = i$sharpe)  
+  # select only the upper part of the frontier
+  cfcut<- frontier[frontier$sd == min(frontier$sd), ]$cf
+  frontier<- frontier[frontier$cf >= cfcut, ]
+  front_list[[length(front_list) + 1]]<- frontier
+}
+
+names(front_list)<- c("CWE", "NWE", "Europe")
+front_list<- Map(cbind, front_list, region = names(front_list))
+
+frontiers<- bind_rows(front_list) %>%
+  mutate(sd = 100*sd, cf = 100*cf)
+sharpe<-  frontiers %>% group_by(region) %>%
+  filter(sr == max(sr))
+
+p4b<- ggplot(frontiers, aes(x = sd, y = cf, color = region)) + 
+  geom_line(size = 1) +
+  geom_point(data = sharpe, aes(x = sd, y = cf, color = region), size = 2) +
+  geom_point(data = sumstats[sumstats$id == "msolar", ], aes(x = sd, y = cf), 
+             inherit.aes = F, color = "darkgrey") +
+  geom_text_repel(data = sumstats[sumstats$id == "msolar", ], aes(x = sd, y = cf, label = country),
+                  inherit.aes = F, , color = "darkgrey") +
+  labs(x = "Standard deviation", y = "Capacity factor (%)", subtitle = "b. Current monthly solar") +
+  mytheme() +
+  scale_color_manual(values = c(cols[1], cols[2], cols[3])) +
+  theme(legend.position = "none")
+
+write.png(p4b, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/msolar.png")
+
+```
+
+
+```{r}
+# _2.3. All ####
+
+# 2.3.1. Hourly ####
+
+# 2.3.1.1. Regions ####
+
+# dim 280512 hours * 76 country/techs = 21 million obs.
+all<- merge(both, solar) %>% na.omit()
+
+# define regions
+CWE<- all[, c("BE", "BE_ON", "BE_OFF", "NL", "NL_ON", "NL_OFF",
+              "FR", "FR_ON", "FR_OFF", "DE", "DE_ON", "DE_OFF", "LU", "LU_ON")]
+NWE<- all[, c("BE", "BE_ON", "BE_OFF", "NL", "NL_ON", "NL_OFF",
+                 "FR", "FR_ON", "FR_OFF", "DE", "DE_ON", "DE_OFF",
+                 "GB", "GB_ON", "GB_OFF", "SE", "SE_ON", "SE_OFF",
+                 "NO", "NO_ON", "NO_OFF", "FI", "FI_ON", "FI_OFF",
+                 "DK", "DK_ON", "DK_OFF", "EE", "EE_ON",
+                 "LT", "LT_ON", "LV", "LV_ON")] 
+
+regions<- list(CWE, NWE, all)
+
+# run all
+opt_list<- list()
+opt_list<- lapply(regions, optimize_portfolio)
+names(opt_list)<- c("CWE", "NWE", "Europe")
+
+str(opt_list)
+
+saveRDS(opt_list, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/opt_list_all.rds")
+opt_list<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_all.rds")
+
+front_list<- list()
+for (i in opt_list) {
+  # create dataframe with efficient frontier data
+  frontier<- tibble(sd = i$sds, 
+                    cf = i$means, 
+                    sr = i$sharpe,
+                    port = c(1:50)) # porfolio id
+  # select only the upper part of the frontier
+  cfcut<- frontier[frontier$sd == min(frontier$sd), ]$cf
+  frontier<- frontier[frontier$cf >= cfcut, ]
+  front_list[[length(front_list) + 1]]<- frontier
+}
+
+names(front_list)<- c("CWE", "NWE", "Europe")
+front_list<- Map(cbind, front_list, region = names(front_list))
+
+frontiers<- bind_rows(front_list) %>%
+  mutate(sd = 100*sd, cf = 100*cf)
+sharpe<-  frontiers %>% group_by(region) %>%
+  filter(sr == max(sr))
+
+allfront<- ggplot(frontiers, aes(x = sd, y = cf, color = region)) + 
+  geom_line(size = 1) +
+  geom_point(data = sharpe, aes(x = sd, y = cf, color = region), size = 2) +
+  labs(x = "Standard deviation", y = "Capacity factor (%)", subtitle = "a. Hourly frontiers and autarky optima") +
+  annotate("text", x = 17, y = 31, label = "CWE", color = cols[1], fontface = "bold") +
+  annotate("text", x = 7, y = 34, label = "Europe", color = cols[2], fontface = "bold") +
+  annotate("text", x = 12, y = 31, label = "NWE", color = cols[3], fontface = "bold") +
+  mytheme() +
+  scale_color_manual(values = c(cols[1], cols[2], cols[3])) +
+  theme(legend.position = "none")
+
+write.png(allfront, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/all.png")
+
+```
+
+
+
+```{r}
+# 2.3.1.3. Autarky ####
+
+# dim 280512 hours * 76 country/techs = 21 million obs.
+all<- merge(both, solar) %>% na.omit()
+
+# define regions
+be<- all[, c("BE", "BE_ON", "BE_OFF")]
+nl<- all[, c("NL", "NL_ON", "NL_OFF")]
+fr<- all[, c("FR", "FR_ON", "FR_OFF")]
+de<- all[, c("DE", "DE_ON", "DE_OFF")]
+gb<- all[, c("GB", "GB_ON", "GB_OFF")]
+se<- all[, c("SE", "SE_ON", "SE_OFF")] 
+no<- all[, c("NO", "NO_ON", "NO_OFF")] 
+dk<- all[, c("DK", "DK_ON", "DK_OFF")] 
+fi<- all[, c("FI", "FI_ON", "FI_OFF")]
+ie<- all[, c("IE", "IE_ON", "IE_OFF")]
+
+regions<- list(be, nl, fr, de, gb, se, no, dk, fi, ie)
+
+# run all
+opt_list<- list()
+opt_list<- lapply(regions, optimize_portfolio)
+names(opt_list)<- c("BE", "NL", "FR", "DE", "GB", "SE", "NO", "DK", "FI", "IE")
+
+str(opt_list)
+
+saveRDS(opt_list, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_autarky.rds")
+opt_list<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_autarky.rds")
+
+front_list<- list()
+for (i in opt_list) {
+  # create dataframe with efficient frontier data
+  frontier<- tibble(sd = i$sds, 
+                    cf = i$means, 
+                    sr = i$sharpe)  
+  # select only the upper part of the frontier
+  cfcut<- frontier[frontier$sd == min(frontier$sd), ]$cf
+  frontier<- frontier[frontier$cf >= cfcut, ]
+  front_list[[length(front_list) + 1]]<- frontier
+}
+
+names(front_list)<- c("BE", "NL", "FR", "DE", "GB", "SE", "NO", "DK", "FI", "IE")
+front_list<- Map(cbind, front_list, region = names(front_list))
+
+frontiers<- bind_rows(front_list) %>%
+  mutate(sd = 100*sd, cf = 100*cf)
+sharpe<-  frontiers %>% group_by(region) %>%
+  filter(sr == max(sr))
+
+autarkyfront<- allfront +
+  geom_point(data = sharpe, aes(x = sd, y = cf), size = 2, color = "grey") +
+  geom_text_repel(data = sharpe, aes(x = sd, y = cf, label = region),
+                  , inherit.aes = F, , color = "darkgrey") +
+  labs(x = "Standard deviation", y = "Capacity factor (%)") +
+  mytheme() +
+  theme(legend.position = "none")
+
+write.png(autarkyfront, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/autarkyall.png")
+```
+
+```{r}
+# daily scale
+dcurrent<- apply.daily(current, colMeans)
+tclass(dcurrent) <- "Date"
+dfuture<- apply.daily(future, colMeans)
+tclass(dcurrent) <- "Date"
+dboth<- apply.daily(both, colMeans)
+tclass(dboth) <- "Date"
+dsolar<- apply.daily(solar, colMeans)
+tclass(dsolar) <- "Date"
+```
+
+```{r}
+# 2.3.2. Daily ####
+
+# 2.3.2.1. Regions ####
+
+all<- merge(dboth, dsolar) %>% na.omit() # dim(all) n = 888288
+
+# define regions
+CWE<- all[, c("BE", "BE_ON", "BE_OFF", "NL", "NL_ON", "NL_OFF",
+              "FR", "FR_ON", "FR_OFF", "DE", "DE_ON", "DE_OFF", "LU", "LU_ON")]
+NWE<- all[, c("BE", "BE_ON", "BE_OFF", "NL", "NL_ON", "NL_OFF",
+              "FR", "FR_ON", "FR_OFF", "DE", "DE_ON", "DE_OFF",
+              "GB", "GB_ON", "GB_OFF", "SE", "SE_ON", "SE_OFF",
+              "NO", "NO_ON", "NO_OFF", "FI", "FI_ON", "FI_OFF",
+              "DK", "DK_ON", "DK_OFF", "EE", "EE_ON",
+              "LT", "LT_ON", "LV", "LV_ON")] 
+
+regions<- list(CWE, NWE, all)
+
+# run all
+opt_list<- list()
+opt_list<- lapply(regions, optimize_portfolio)
+names(opt_list)<- c("CWE", "NWE", "Europe")
+
+str(opt_list)
+
+saveRDS(opt_list, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_dall.rds")
+opt_list<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_dall.rds")
+
+front_list<- list()
+for (i in opt_list) {
+  # create dataframe with efficient frontier data
+  frontier<- tibble(sd = i$sds, 
+                    cf = i$means, 
+                    sr = i$sharpe,
+                    port = c(1:50)) # porfolio id
+  # select only the upper part of the frontier
+  cfcut<- frontier[frontier$sd == min(frontier$sd), ]$cf
+  frontier<- frontier[frontier$cf >= cfcut, ]
+  front_list[[length(front_list) + 1]]<- frontier
+}
+
+names(front_list)<- c("CWE", "NWE", "Europe")
+front_list<- Map(cbind, front_list, region = names(front_list))
+
+frontiers<- bind_rows(front_list) %>%
+  mutate(sd = 100*sd, cf = 100*cf)
+sharpe<-  frontiers %>% group_by(region) %>%
+  filter(sr == max(sr))
+
+dallfront<- ggplot(frontiers, aes(x = sd, y = cf, color = region)) + 
+  geom_line(size = 1) +
+  geom_point(data = sharpe, aes(x = sd, y = cf, label = region, color = region), size = 2) +
+  geom_text(data = sharpe, aes(x = sd, y = cf, label = region), 
+            hjust = -0.1, vjust = -0.5, size = 3, fontface = "bold", show.legend = FALSE) +
+  labs(x = "Standard deviation", y = "Capacity factor (%)", 
+       subtitle = "b. Daily frontiers and autarky optima") +
+  mytheme() +
+  scale_color_manual(values = c(cols[1], cols[2], cols[3])) +
+  theme(legend.position = "none")
+
+write.png(dallfront, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/dall.png")
+
+
+# tech/country shares
+for (region in c("CWE", "NWE", "Europe")){
+  for(portfolio in c("weights_minvar", "weights_maxmean", "weights_sharpe")){
+    w<- opt_list[[region]][[portfolio]]
+    w1<- w[w >0.01]*100
+    w2<- data.frame(weight = w1, country = names(w1), region = region) %>% 
+      mutate(tech = ifelse(grepl("ON", country), "Onshore",
+                           ifelse(grepl("OFF", country), "Offshore", "Solar"))) %>%
+      mutate(country = substr(country, start = 1, stop = 2)) %>% print
+    
+    wplot<- ggplot(w2, aes(y = reorder(country, weight, sum),
+                           x = weight, fill = tech)) +
+      geom_bar(position="stack", stat="identity") +
+      geom_text(aes(label = round(weight, digits = 1)),
+                size = 3, position = position_stack(vjust = 0.5)) +
+      labs(x = "Share of installed capacity (%)", 
+           subtitle = paste(region, portfolio, sep = "")) +
+      # scale_fill_viridis_d(option = "magma") +
+      scale_fill_manual(values = c("Offshore" = "#619CFF",
+                                   "Onshore" =  "#00BA38","Solar" = "#F8766D"),
+                        guide = guide_legend(reverse = TRUE)) +
+      mytheme() +
+      theme(axis.title.y = element_blank(),
+            legend.position = c(.8,.2), legend.title = element_blank())
+    write.png(wplot, paste("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/weights/daily_", region, portfolio, ".png", sep = ""))
+  }
+}
+
+```
+
+```{r}
+# 2.3.2.3. Autarky ####
+
+# dim 280512 hours * 76 country/techs = 21 million obs.
+all<- merge(dboth, dsolar) %>% na.omit()
+
+# define regions
+be<- all[, c("BE", "BE_ON", "BE_OFF")]
+nl<- all[, c("NL", "NL_ON", "NL_OFF")]
+fr<- all[, c("FR", "FR_ON", "FR_OFF")]
+de<- all[, c("DE", "DE_ON", "DE_OFF")]
+gb<- all[, c("GB", "GB_ON", "GB_OFF")]
+se<- all[, c("SE", "SE_ON", "SE_OFF")] 
+no<- all[, c("NO", "NO_ON", "NO_OFF")] 
+dk<- all[, c("DK", "DK_ON", "DK_OFF")] 
+fi<- all[, c("FI", "FI_ON", "FI_OFF")]
+ie<- all[, c("IE", "IE_ON", "IE_OFF")]
+
+regions<- list(be, nl, fr, de, gb, se, no, dk, fi, ie)
+
+# run all
+opt_list<- list()
+opt_list<- lapply(regions, optimize_portfolio)
+names(opt_list)<- c("BE", "NL", "FR", "DE", "GB", "SE", "NO", "DK", "FI", "IE")
+
+str(opt_list)
+
+saveRDS(opt_list, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_dautarky.rds")
+opt_list<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_dautarky.rds")
+
+front_list<- list()
+for (i in opt_list) {
+  # create dataframe with efficient frontier data
+  frontier<- tibble(sd = i$sds, 
+                    cf = i$means, 
+                    sr = i$sharpe)  
+  # select only the upper part of the frontier
+  cfcut<- frontier[frontier$sd == min(frontier$sd), ]$cf
+  frontier<- frontier[frontier$cf >= cfcut, ]
+  front_list[[length(front_list) + 1]]<- frontier
+}
+
+names(front_list)<- c("BE", "NL", "FR", "DE", "GB", "SE", "NO", "DK", "FI", "IE")
+front_list<- Map(cbind, front_list, region = names(front_list))
+
+frontiers<- bind_rows(front_list) %>%
+  mutate(sd = 100*sd, cf = 100*cf)
+sharpe<-  frontiers %>% group_by(region) %>%
+  filter(sr == max(sr))
+
+dautarkyfront<- dallfront +
+  geom_point(data = sharpe, aes(x = sd, y = cf), size = 2, color = "grey") +
+  geom_text_repel(data = sharpe, aes(x = sd, y = cf, label = region),
+                  , inherit.aes = F, , color = "darkgrey") +
+  labs(x = "Standard deviation", y = "Capacity factor (%)") +
+  # annotate("text", x = 16, y = 30, label = "CWE", color = cols[1]) +
+  # annotate("text", x = 7, y = 32, label = "Europe", color = cols[2]) +
+  # annotate("text", x = 12, y = 31, label = "NWE", color = cols[3]) +
+  mytheme() +
+  # scale_color_brewer(palette = "Set1") +
+  theme(legend.position = "none")
+
+write.png(dautarkyfront, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/dautarkyall.png")
+
+# optimal
+
+# tech/country shares simple
+for (region in c("BE", "NL", "FR", "DE", "GB", "SE", "NO", "DK", "FI", "IE")){
+  for(portfolio in c("weights_minvar", "weights_maxmean", "weights_sharpe")){
+    w<- opt_list[[region]][[portfolio]]
+    w1<- w[w >0.01]*100
+    w2<- data.frame(weight = w1, country = names(w1), region = region) %>% print
+    
+    wplot<- ggplot(w2, aes(y = reorder(country, weight), x = weight)) +
+      geom_bar(stat = "identity") +
+      labs(x = "Share of installed capacity (%)", 
+           subtitle = paste(region, portfolio, sep = "")) +
+      mytheme() +
+      theme(axis.title.y = element_blank())
+    write.png(wplot, paste("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/weights/daily_", region, portfolio, ".png", sep = ""))
+  }
+}
+
+# tech/country shares bar with all countries
+weights<- data.frame()
+for (region in c("BE", "NL", "FR", "DE", "GB", "SE", "NO", "DK", "FI", "IE")){
+  for(portfolio in c("weights_minvar", "weights_maxmean", "weights_sharpe")){
+    w<- opt_list[[region]][[portfolio]]
+    w1<- w[w >0.01]*100
+    w2<- data.frame(weight = w1, country = names(w1), 
+                    region = region, port = portfolio) %>%
+      mutate(tech = ifelse(grepl("ON", country), "Onshore",
+                           ifelse(grepl("OFF", country), "Offshore", "Solar"))) %>%
+      mutate(country = substr(country, start = 1, stop = 2))
+    weights<- bind_rows(weights, w2)
+  }
+}
+
+dautarywplot<- weights %>% filter(port == "weights_sharpe") %>% 
+  ggplot(aes(fill = tech, y = country, x = weight*100)) + 
+  geom_bar(position="fill", stat="identity") +
+  geom_text(aes(label = paste(round(weight, digits = 1), "%", sep = "")),
+            size = 3, position = position_fill(vjust = 0.5)) +
+  scale_fill_manual(values = c("Offshore" = "#619CFF", "Onshore" =  "#00BA38","Solar" = "#F8766D"),
+                    guide = guide_legend(reverse = TRUE)) +
+  labs(x = element_blank(), y = element_blank(), subtitle = "b. Monthly optimal shares") +
+  mytheme() +
+  theme(legend.position = "bottom", legend.title = element_blank())
+
+write.png(dautarywplot, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/weights/dautarywplot.png")
+
+
+for(portfolio in c("weights_minvar", "weights_maxmean", "weights_sharpe")){
+  wplot<- weights %>% filter(port == portfolio) %>% 
+    ggplot(aes(fill = tech, y = country, x = weight*100)) + 
+    geom_bar(position="fill", stat="identity") +
+    geom_text(aes(label = paste(round(weight, digits = 1), "%", sep = "")),
+              size = 3, position = position_fill(vjust = 0.5)) +
+    scale_fill_manual(values = c("Offshore" = "#619CFF",
+                                 "Onshore" =  "#00BA38","Solar" = "#F8766D"),
+                      guide = guide_legend(reverse = TRUE)) +
+    labs(x = "Share of installed capacity per tech. (%)", y = element_blank()) +
+    mytheme() +
+    theme(legend.position = "bottom", legend.title = element_blank())
+  
+  write.png(wplot, paste("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/weights/wplot_daily_", portfolio, ".png", sep = ""))
+}
+```
+
+```{r}
+# 2.3.3. Monthly ####
+
+# 2.3.3.1. Regions ####
+
+all<- merge(mboth, msolar) %>% na.omit() # dim(all) n = 29184
+
+# define regions
+CWE<- all[, c("BE", "BE_ON", "BE_OFF", "NL", "NL_ON", "NL_OFF",
+              "FR", "FR_ON", "FR_OFF", "DE", "DE_ON", "DE_OFF", "LU", "LU_ON")]
+NWE<- all[, c("BE", "BE_ON", "BE_OFF", "NL", "NL_ON", "NL_OFF",
+              "FR", "FR_ON", "FR_OFF", "DE", "DE_ON", "DE_OFF",
+              "GB", "GB_ON", "GB_OFF", "SE", "SE_ON", "SE_OFF",
+              "NO", "NO_ON", "NO_OFF", "FI", "FI_ON", "FI_OFF",
+              "DK", "DK_ON", "DK_OFF", "EE", "EE_ON",
+              "LT", "LT_ON", "LV", "LV_ON")] 
+
+regions<- list(CWE, NWE, all)
+
+# run all
+opt_list<- list()
+opt_list<- lapply(regions, optimize_portfolio)
+names(opt_list)<- c("CWE", "NWE", "Europe")
+
+str(opt_list)
+
+saveRDS(opt_list, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_mall.rds")
+opt_list<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_mall.rds")
+
+front_list<- list()
+for (i in opt_list) {
+  # create dataframe with efficient frontier data
+  frontier<- tibble(sd = i$sds, 
+                    cf = i$means, 
+                    sr = i$sharpe,
+                    port = c(1:50)) # porfolio id
+  # select only the upper part of the frontier
+  cfcut<- frontier[frontier$sd == min(frontier$sd), ]$cf
+  frontier<- frontier[frontier$cf >= cfcut, ]
+  front_list[[length(front_list) + 1]]<- frontier
+}
+
+names(front_list)<- c("CWE", "NWE", "Europe")
+front_list<- Map(cbind, front_list, region = names(front_list))
+
+frontiers<- bind_rows(front_list) %>%
+  mutate(sd = 100*sd, cf = 100*cf)
+sharpe<-  frontiers %>% group_by(region) %>%
+  filter(sr == max(sr))
+
+
+#autarkymonth <- ggplot(frontiers, aes(x = sd, y = cf)) +
+  #geom_line(aes(color = region), size = 1) +
+  #geom_point(data = sharpe, aes(x = sd, y = cf), size = 2, color = "grey") +
+  #geom_text_repel(data = sharpe, aes(x = sd, y = cf, label = region),
+                  #inherit.aes = FALSE, color = "darkgrey", fontface = "bold", size = 3) +
+  #labs(x = "Standard deviation", y = "Capacity factor (%)") +
+  #mytheme() +
+  #theme(legend.position = "none")
+
+
+mallfront<- ggplot(frontiers, aes(x = sd, y = cf, color = region)) + 
+  geom_line(size = 1) +
+  geom_point(data = sharpe, aes(x = sd, y = cf, color = region), size = 2) +
+  geom_text(data = sharpe, aes(x = sd, y = cf, label = region), 
+            hjust = -0.1, vjust = -0.5, size = 3, fontface = "bold", show.legend = FALSE) +
+  labs(x = "Standard deviation", y = "Capacity factor (%)",
+       subtitle = "b. Monthly frontiers and autarky optima") +
+  mytheme() +
+  scale_color_manual(values = c(cols[1], cols[2], cols[3])) +
+  theme(legend.position = "none")
+
+write.png(mallfront, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/autarkymonth.png")
+
+
+# tech/country shares
+for (region in c("CWE", "NWE", "Europe")){
+  for(portfolio in c("weights_minvar", "weights_maxmean", "weights_sharpe")){
+    w<- opt_list[[region]][[portfolio]]
+    w1<- w[w >0.01]*100
+    w2<- data.frame(weight = w1, country = names(w1), region = region) %>% 
+      mutate(tech = ifelse(grepl("ON", country), "Onshore",
+                           ifelse(grepl("OFF", country), "Offshore", "Solar"))) %>%
+      mutate(country = substr(country, start = 1, stop = 2)) %>% print
+    
+    wplot<- ggplot(w2, aes(y = reorder(country, weight, sum),
+                           x = weight, fill = tech)) +
+      geom_bar(position="stack", stat="identity") +
+      geom_text(aes(label = round(weight, digits = 1)),
+                size = 3, position = position_stack(vjust = 0.5)) +
+      labs(x = "Share of installed capacity (%)", 
+           subtitle = paste(region, portfolio, sep = "")) +
+      scale_fill_manual(values = c("Offshore" = "#619CFF",
+                                   "Onshore" =  "#00BA38","Solar" = "#F8766D"),
+                        guide = guide_legend(reverse = TRUE)) +
+      mytheme() +
+      theme(axis.title.y = element_blank(),
+            legend.position = c(.8,.2), legend.title = element_blank())
+    write.png(wplot, paste("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/weights/monthly_", region, portfolio, ".png", sep = ""))
+  }
+}
+
+```
+
+```{r}
+# 2.3.3.3. Autarky ####
+
+# dim 280512 hours * 76 country/techs = 21 million obs.
+all<- merge(mboth, msolar) %>% na.omit()
+
+# define regions
+be<- all[, c("BE", "BE_ON", "BE_OFF")]
+nl<- all[, c("NL", "NL_ON", "NL_OFF")]
+fr<- all[, c("FR", "FR_ON", "FR_OFF")]
+de<- all[, c("DE", "DE_ON", "DE_OFF")]
+gb<- all[, c("GB", "GB_ON", "GB_OFF")]
+se<- all[, c("SE", "SE_ON", "SE_OFF")] 
+no<- all[, c("NO", "NO_ON", "NO_OFF")] 
+dk<- all[, c("DK", "DK_ON", "DK_OFF")] 
+fi<- all[, c("FI", "FI_ON", "FI_OFF")]
+ie<- all[, c("IE", "IE_ON", "IE_OFF")]
+
+regions<- list(be, nl, fr, de, gb, se, no, dk, fi, ie)
+
+# run all
+opt_list<- list()
+opt_list<- lapply(regions, optimize_portfolio)
+names(opt_list)<- c("BE", "NL", "FR", "DE", "GB", "SE", "NO", "DK", "FI", "IE")
+
+str(opt_list)
+
+saveRDS(opt_list, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_mautarky.rds")
+opt_list<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_mautarky.rds")
+
+front_list<- list()
+for (i in opt_list) {
+  # create dataframe with efficient frontier data
+  frontier<- tibble(sd = i$sds, 
+                    cf = i$means, 
+                    sr = i$sharpe)  
+  # select only the upper part of the frontier
+  cfcut<- frontier[frontier$sd == min(frontier$sd), ]$cf
+  frontier<- frontier[frontier$cf >= cfcut, ]
+  front_list[[length(front_list) + 1]]<- frontier
+}
+
+names(front_list)<- c("BE", "NL", "FR", "DE", "GB", "SE", "NO", "DK", "FI", "IE")
+front_list<- Map(cbind, front_list, region = names(front_list))
+
+frontiers<- bind_rows(front_list) %>%
+  mutate(sd = 100*sd, cf = 100*cf)
+sharpe<-  frontiers %>% group_by(region) %>%
+  filter(sr == max(sr))
+
+mautarkyfront<- mallfront +
+  geom_point(data = sharpe, aes(x = sd, y = cf), size = 2, color = "grey") +
+  geom_text_repel(data = sharpe, aes(x = sd, y = cf, label = region),
+                  , inherit.aes = F, , color = "darkgrey") +
+  labs(x = "Standard deviation", y = "Capacity factor (%)") +
+  mytheme() +
+  theme(legend.position = "none")
+
+write.png(mautarkyfront, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/mautarkyall.png")
+
+# tech/country shares simple
+for (region in c("BE", "NL", "FR", "DE", "GB", "SE", "NO", "DK", "FI", "IE")){
+  for(portfolio in c("weights_minvar", "weights_maxmean", "weights_sharpe")){
+    w<- opt_list[[region]][[portfolio]]
+    w1<- w[w >0.01]*100
+    w2<- data.frame(weight = w1, country = names(w1), region = region) %>% print
+    
+    wplot<- ggplot(w2, aes(y = reorder(country, weight), x = weight)) +
+      geom_bar(stat = "identity") +
+      labs(x = "Share of installed capacity (%)", 
+           subtitle = paste(region, portfolio, sep = "")) +
+      mytheme() +
+      theme(axis.title.y = element_blank())
+    write.png(wplot, paste("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/weights/monthly_", region, portfolio, ".png", sep = ""))
+  }
+}
+
+# tech/country shares bar with all countries
+weights<- data.frame()
+for (region in c("BE", "NL", "FR", "DE", "GB", "SE", "NO", "DK", "FI", "IE")){
+  for(portfolio in c("weights_minvar", "weights_maxmean", "weights_sharpe")){
+    w<- opt_list[[region]][[portfolio]]
+    w1<- w[w >0.01]*100
+    w2<- data.frame(weight = w1, country = names(w1), 
+                    region = region, port = portfolio) %>%
+      mutate(tech = ifelse(grepl("ON", country), "Onshore",
+                           ifelse(grepl("OFF", country), "Offshore", "Solar"))) %>%
+      mutate(country = substr(country, start = 1, stop = 2))
+    weights<- bind_rows(weights, w2)
+  }
+}
+
+mautarywplot<- weights %>% filter(port == "weights_sharpe") %>% 
+  ggplot(aes(fill = tech, y = country, x = weight*100)) + 
+  geom_bar(position="fill", stat="identity") +
+  geom_text(aes(label = paste(round(weight, digits = 1), "%", sep = "")),
+            size = 3, position = position_fill(vjust = 0.5)) +
+  scale_fill_manual(values = c("Offshore" = "#619CFF", "Onshore" =  "#00BA38","Solar" = "#F8766D"),
+                    guide = guide_legend(reverse = TRUE)) +
+  labs(x = element_blank(), y = element_blank(), subtitle = "d. Monthly optimal shares") +
+  mytheme() +
+  theme(legend.position = "bottom", legend.title = element_blank())
+
+write.png(mautarywplot, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/weights/mautarywplot.png")
+
+
+for(portfolio in c("weights_minvar", "weights_maxmean", "weights_sharpe")){
+  wplot<- weights %>% filter(port == portfolio) %>% 
+    ggplot(aes(fill = tech, y = country, x = weight*100)) + 
+    geom_bar(position="fill", stat="identity") +
+    geom_text(aes(label = paste(round(weight, digits = 1), "%", sep = "")),
+              size = 3, position = position_fill(vjust = 0.5)) +
+    scale_fill_manual(values = c("Offshore" = "#619CFF",
+                                 "Onshore" =  "#00BA38","Solar" = "#F8766D"),
+                      guide = guide_legend(reverse = TRUE)) +
+    labs(x = "Share of installed capacity per tech. (%)", y = element_blank()) +
+    mytheme() +
+    theme(legend.position = "bottom", legend.title = element_blank())
+  
+  write.png(wplot, paste("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/weights/wplot_monthly_", portfolio, ".png", sep = ""))
+}
+
+```
+
+
+Part 2. Analysis of Demand
+
+```{r}
+demand_data <- read.csv("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/demand_data_new_GB.csv")
+demand_data
+```
+
+```{r}
+library(dplyr)
+
+demand_means <- demand_data %>%
+  select(-DateTime) %>%   # Remove DateTime column
+  summarise(across(everything(), mean, na.rm = TRUE))
+demand_means
+
+#exclude LU Luxemburge
+
+demand_means <- demand_means %>% select(-LU)
+
+```
+
+```{r}
+library(tidyr)
+library(dplyr)
+
+# Suppose your summarised result is stored in `column_means`
+demand_means_long <- demand_means %>%
+  pivot_longer(cols = everything(), names_to = "country", values_to = "demand")
+demand_means_long
+```
+
+
+
+```{r}
+
+mean_demand_df <- demand_data %>%
+  pivot_longer(-DateTime, names_to = "country", values_to = "demand") %>%
+  drop_na() %>%
+  group_by(country) %>%
+  summarise(value = mean(demand, na.rm = TRUE)) %>%
+  mutate(demand = "average") %>%
+  filter(!country %in% c("LU", "MK")) %>%  # exclude LU and MK
+  arrange(country)
+
+print(mean_demand_df)
+```
+
+
+```{r}
+max_demand_df <- demand_data %>%
+  pivot_longer(-DateTime, names_to = "country", values_to = "demand") %>%
+  drop_na() %>%
+  group_by(country) %>%
+  summarise(value = max(demand, na.rm = TRUE)) %>%
+  mutate(demand = "maximum") %>%
+  filter(!country %in% c("LU", "MK")) %>%  # exclude LU and MK
+  arrange(country)
+
+print(max_demand_df)
+```
+
+```{r}
+
+q3_demand_df <- demand_data %>%
+  pivot_longer(-DateTime, names_to = "country", values_to = "demand") %>%
+  drop_na() %>%
+  group_by(country) %>%
+  summarise(value = quantile(demand, probs = 0.75, na.rm = TRUE)) %>%
+  mutate(demand = "3rd quantile") %>%
+  filter(!country %in% c("LU", "MK")) %>%  # exclude LU and MK
+  arrange(country)
+
+print(q3_demand_df)
+
+```
+
+```{r}
+#join all tables 
+
+bydemand<- bind_rows(mean_demand_df, max_demand_df, q3_demand_df)
+bydemand
+```
+
+```{r}
+bydemandplot <- ggplot(bydemand, aes(x = value, y = reorder(country, value))) +
+  geom_point(aes(shape = demand, color = demand), size = 2) + 
+  scale_color_manual(values = c("maximum" = "red",
+                                "average" =  "yellow", "3rd quantile" = "green")) +
+  labs(x = element_blank(), y = element_blank(), subtitle = "Demand comparison (MWh)") +
+  scale_x_continuous(breaks = seq(0, 100000, by = 10000)) + 
+  mytheme() + 
+  theme(legend.position = "right", legend.title = element_blank())
+
+bydemandplot
+
+write.png(bydemandplot,"C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/figures/bydemandplot.png", width=4, height=6)
+
+```
+
+```{r}
+# Load libraries
+library(readr)
+library(lubridate)
+
+# Read CSV and parse DateTime
+demand_data_new <- read_csv("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/demand_data_new_GB.csv", 
+                        col_types = cols(
+                          DateTime = col_datetime(format = "")  # auto-detects format
+                        ))
+# Check structure
+str(demand_data_new)
+
+```
+
+```{r}
+#to exclude LU es it tis the same as DE
+
+# Exclude Luxembourg (LU)
+demand_data <- demand_data_new %>% select(-LU)
+demand_data
+```
+
+```{r}
+library(tidyverse)
+
+demand_long <- demand_data %>%
+  pivot_longer(cols = -DateTime, names_to = "Country", values_to = "Demand") %>%
+  drop_na()
+demand_long
+
+```
+
+```{r}
+library(dplyr)
+
+demand_grouped <- demand_long %>%
+  group_by(DateTime) %>%
+  summarise(Demand = sum(Demand, na.rm = TRUE))
+
+demand_grouped
+
+```
+
+```{r}
+
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+
+demand_avg_by_hour <- demand_grouped %>%  # or your dataframe name
+  mutate(Hour = hour(DateTime)) %>%
+  group_by(Hour) %>%
+  summarise(AvgDemand = mean(Demand, na.rm = TRUE))
+
+ggplot(demand_avg_by_hour, aes(x = Hour, y = AvgDemand)) +
+  geom_line(color = "steelblue", size = 1.3) +   # Thicker line
+  geom_point(color = "steelblue", size = 3) +    # Bigger dots
+  scale_x_continuous(breaks = 0:23) +
+  labs(x = "Hour of Day", y = "Demand (MWh)", title = "Average Demand by Hour (2015-2024)") +
+  theme_minimal()
+
+
+```
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+demand_grouped <- demand_long %>%
+  group_by(DateTime) %>%
+  summarise(Demand = sum(Demand, na.rm = TRUE))
+
+ggplot(demand_grouped, aes(x = DateTime, y = Demand)) +
+  geom_line(color = "steelblue") +
+  labs(x = "Time", y = "Hourly Demand (MWh)", title = "Hourly Demand Across the Years (2015-2024)") +
+  theme_minimal()
+
+```
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+
+# Set locale to English for month names
+Sys.setlocale("LC_TIME", "C")
+
+demand_monthly <- demand_grouped %>%
+  mutate(Month = month(DateTime, label = TRUE, abbr = TRUE)) %>%  # extract month as factor with labels
+  group_by(Month) %>%
+  summarise(TotalDemand = sum(Demand, na.rm = TRUE)/10)
+
+ggplot(demand_monthly, aes(x = Month, y = TotalDemand)) +
+  geom_col(fill = "steelblue") +   # bar chart is usually better for categorical x-axis
+  labs(x = "Month", y = "Demand (MWh)", title = "Average Demand by Month (2015–2024)") +
+  theme_minimal()
+
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+
+demand_by_weekday <- demand_grouped %>%
+  mutate(Weekday = wday(DateTime, label = TRUE, abbr = FALSE)) %>%
+  group_by(Weekday) %>%
+  summarise(TotalDemand = sum(Demand, na.rm = TRUE)/365) %>%
+  mutate(Weekday = factor(Weekday, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")))
+
+ggplot(demand_by_weekday, aes(x = Weekday, y = TotalDemand)) +
+  geom_col(fill = "steelblue") +
+  labs(x = "Day of the Week", y = "Demand (MWh)", title = "Average Demand by Day of the Week (2015-2024)") +
+  theme_minimal()
+
+```
+
+
+
+Optimization part 3
+
+```{r}
+# Eurostat installed capacities NRG_INF_EPCRW
+cap<- read_excel("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/data/eurostat_cap.xlsx") %>%
+  mutate(wind_sh = wind/sum(wind+solar), solar_sh = solar/sum(wind+solar))
+```
+
+```{r}
+# EU reference scenario
+euref<- read_excel("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/data/EUref2016.xlsx")
+eunames<- euref$country %>% unique()
+eunames<- eunames[!eunames %in% c("CY", "MT")]
+```
+
+```{r}
+# create eu datasets (current & future)
+# for current just merge wind and solar datasets
+currenteu<- current[, eunames] %>% fortify() %>%
+  gather(country, wind_cf, -Index)
+solareu<- solar[, eunames] %>% fortify() %>%
+  gather(country, solar_cf, -Index)
+eucurrent<- full_join(currenteu, solareu) %>% na.omit
+```
+
+```{r}
+wactual<- cap %>% select(country, Solar = solar_sh, Wind = wind_sh) %>% 
+  gather(tech, weight, - country) %>% mutate(region = "Actual") %>%
+  filter(country %in% eunames) %>%
+  mutate(weight = 100*weight/sum(weight))
+```
+
+```{r}
+# Convert 'wactual' into a named numeric vector
+wactual_matrix <- matrix(wactual$weight, nrow = 1, ncol = length(wactual$country))
+colnames(wactual_matrix) <- wactual$country  # Set country names as column names
+
+colnames(wactual_matrix) <- make.names(colnames(wactual_matrix), unique = TRUE)
+wactual_matrix
+```
+
+```{r}
+wactual_new<- cap %>% select(country, Solar = solar_sh, Wind = wind_sh) %>% 
+  gather(tech, weight, - country) %>% mutate(region = "Actual") %>%
+  filter(country %in% eunames) %>%
+  mutate(weight = weight/sum(weight))
+wactual_new
+```
+
+```{r}
+# Create the new column with the country and .1 for solar
+wactual_line <- wactual_new %>%
+  mutate(country = ifelse(tech == "Solar", paste(country, ".1", sep = ""), country)) %>%
+  select(country, weight) %>%
+  spread(key = country, value = weight)
+
+# View the result
+print(wactual_line)
+```
+
+```{r}
+# Suppose your tibble is named final_tibble (1 row × 52 cols)
+wactual_vector <- as.numeric(wactual_line[1, ])  # extract the single row as numeric values
+names(wactual_vector) <- colnames(wactual_line)  # assign column names as vector names
+
+# View the result
+wactual_vector
+
+min_wactual <- wactual_vector/2
+min_wactual
+```
+
+Optimization for future CF
+
+```{r}
+currenteu<- current[, eunames]
+solareu<- solar[, eunames]
+eucurrent<- merge(currenteu, solareu) %>% na.omit # country code (CC) wind, CC.1 solar
+
+# for wind first select future, then assume current for missing and merge solar
+futureeu<- future[, colnames(future) %in% eunames]
+missing<-  eunames[!eunames %in% names(futureeu)]
+currenteu2<- current[, missing]
+eufuture<- merge(futureeu, currenteu2, solareu) %>% na.omit
+eufuture<- eufuture[, order(colnames(eufuture))] # order names to fit constraints
+```
+
+```{r}
+# 2.4.3. Optim ####
+
+optimize_constrained_portfolio_reslow <- function(data, low, high){
+  # find min. value for which the optim. is defined
+  for (i in seq(.01, 1, .01)) {
+    if (class(tryCatch(portfolio.optim(x = data, i, reslow = low, reshigh = high), 
+                       error = function(e) "chao")) == "list")
+    {min<- i 
+    break}
+  }
+  
+  # find max. value for which the optim. is defined
+  for (i in seq(.01, 1, .01)) {
+    if (class(tryCatch(portfolio.optim(x = data, i, reslow = low, reshigh = high), 
+                       error=function(e) "chao")) == "list")
+    {max<- i}
+  }
+  
+  # create vectors/matrices to fill with results
+  # create grid of returns for the frontier
+  grid <- seq(from = min, to = max, length.out = 50)
+  # Create an empty matrix to store portfolio "returns" (CF)
+  returns <- matrix(NA, 50, length(data)/ncol(data))
+  # Create empty vectors to store means and std. deviations
+  means <- sds <- rep(NA, length(grid)) 
+  # Create an empty matrix to store weights
+  weights <- matrix(NA, 50, ncol(data)) 
+  names(weights)<- colnames(data)
+  
+  # run optimization model
+  for(i in 1:length(grid)) {
+    opt1 <- portfolio.optim(x = data, pm = grid[i], 
+                           reslow = low, reshigh = high) # restrictions
+    returns[i, ]<- opt1$px # matrix of portfolio "returns" (CF)
+    means[i] <- opt1$pm # vector of mean portfolio capacity factor
+    sds[i] <- opt1$ps # vector of portfolio sd
+    weights[i, ] <- opt1$pw # matrix of weights
+  }
+  
+  # calculate sharpe ratio and weights of extreme portfolios
+  sharpe <- means/sds # Sharpe ratio 
+  
+  # portfolio shares for the three extreme portfolios
+  weights_sharpe <- weights[sharpe == max(sharpe), ] # optimal i.e. max sharpe
+  weights_minvar <- weights[sds == min(sds), ] # min. var
+  weights_maxmean <- weights[means == max(means), ] # max. return
+  
+  # returns of each of the extreme portfolios
+  returns_sharpe <- returns[sharpe == max(sharpe), ] # maxsharpr
+  returns_minvar <- returns[sds == min(sds), ] # minvar
+  returns_maxmean <- returns[means == max(means), ] # maxret
+  
+  # name weights and returns
+  names(weights_sharpe)<-names(weights_minvar)<-names(weights_maxmean)<-colnames(data)
+  names(returns_sharpe)<-names(returns_minvar)<-names(returns_maxmean)<-colnames(data)
+  
+  # return a list of results
+  opt1<- list(means = means, sds = sds, sharpe = sharpe, # 1 obs/portfolio
+             weights = weights,returns = returns, # 1 matrix/portfolio
+             weights_sharpe = weights_sharpe, # weights of extreme portfolios
+             weights_minvar = weights_minvar, weights_maxmean = weights_maxmean,
+             returns_sharpe = returns_sharpe, # returns of extreme portfolios
+             returns_minvar = returns_minvar, returns_maxmean = returns_maxmean)
+}
+
+#my code 
+eufuture <- coredata(eufuture)  # Extract numeric matrix from xts
+
+const <- list(
+  max = rep(1, ncol(eufuture))   # Set max share to 1 for all assets
+)
+# optimization
+# single set of constraints
+opt1<- optimize_constrained_portfolio_reslow(data = eufuture, low = min_wactual, high = const$max)
+
+
+saveRDS(opt1, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/results/opt_eu_constx41.rds")
+opt1<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/results/opt_eu_constx41.rds")
+```
+
+```{r}
+# optimal current and future EU
+opt_list2<- list()
+opt_list2 <- lapply(list(eucurrent, eufuture), function(d) {
+  optimize_constrained_portfolio_reslow(
+    data = coredata(d),          # Convert xts to matrix
+    low = min_wactual,           # Lower constraint vector
+    high = const$max             # Upper constraint vector
+  )
+})
+names(opt_list2)<- c("Current", "Future")
+
+saveRDS(opt_list2, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_eu2.rds")
+opt_list2<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_eu2.rds")
+
+```
+
+Optimization for the optimal current
+
+```{r}
+
+optimize_constrained_portfolio_reslow_current <- function(data, low, high){
+  # find min. value for which the optim. is defined
+  for (i in seq(.01, 1, .01)) {
+    if (class(tryCatch(portfolio.optim(x = data, i, reslow = low, reshigh = high), 
+                       error = function(e) "chao")) == "list")
+    {min<- i 
+    break}
+  }
+  
+  # find max. value for which the optim. is defined
+  for (i in seq(.01, 1, .01)) {
+    if (class(tryCatch(portfolio.optim(x = data, i, reslow = low, reshigh = high), 
+                       error=function(e) "chao")) == "list")
+    {max<- i}
+  }
+  
+  # create vectors/matrices to fill with results
+  # create grid of returns for the frontier
+  grid <- seq(from = min, to = max, length.out = 50)
+  # Create an empty matrix to store portfolio "returns" (CF)
+  returns <- matrix(NA, 50, length(data)/ncol(data))
+  # Create empty vectors to store means and std. deviations
+  means <- sds <- rep(NA, length(grid)) 
+  # Create an empty matrix to store weights
+  weights <- matrix(NA, 50, ncol(data)) 
+  names(weights)<- colnames(data)
+  
+  # run optimization model
+  for(i in 1:length(grid)) {
+    opt2 <- portfolio.optim(x = data, pm = grid[i], 
+                           reslow = low, reshigh = high) # restrictions
+    returns[i, ]<- opt2$px # matrix of portfolio "returns" (CF)
+    means[i] <- opt2$pm # vector of mean portfolio capacity factor
+    sds[i] <- opt2$ps # vector of portfolio sd
+    weights[i, ] <- opt2$pw # matrix of weights
+  }
+  
+  # calculate sharpe ratio and weights of extreme portfolios
+  sharpe <- means/sds # Sharpe ratio 
+  
+  # portfolio shares for the three extreme portfolios
+  weights_sharpe <- weights[sharpe == max(sharpe), ] # optimal i.e. max sharpe
+  weights_minvar <- weights[sds == min(sds), ] # min. var
+  weights_maxmean <- weights[means == max(means), ] # max. return
+  
+  # returns of each of the extreme portfolios
+  returns_sharpe <- returns[sharpe == max(sharpe), ] # maxsharpr
+  returns_minvar <- returns[sds == min(sds), ] # minvar
+  returns_maxmean <- returns[means == max(means), ] # maxret
+  
+  # name weights and returns
+  names(weights_sharpe)<-names(weights_minvar)<-names(weights_maxmean)<-colnames(data)
+  names(returns_sharpe)<-names(returns_minvar)<-names(returns_maxmean)<-colnames(data)
+  
+  # return a list of results
+  opt2<- list(means = means, sds = sds, sharpe = sharpe, # 1 obs/portfolio
+             weights = weights,returns = returns, # 1 matrix/portfolio
+             weights_sharpe = weights_sharpe, # weights of extreme portfolios
+             weights_minvar = weights_minvar, weights_maxmean = weights_maxmean,
+             returns_sharpe = returns_sharpe, # returns of extreme portfolios
+             returns_minvar = returns_minvar, returns_maxmean = returns_maxmean)
+}
+```
+
+```{r}
+# First: make sure column names are ordered alphabetically in both
+currenteu1 <- currenteu[, order(colnames(currenteu))]
+solareu1 <- solareu[, order(colnames(solareu))]
+
+# Then: interleave wind and solar columns like eufuture
+eucurrent1 <- do.call(merge, as.list(rbind(as.list(currenteu1), as.list(solareu1))))
+
+eucurrent1[is.na(eucurrent1)] <- 0 #NA as a zero
+
+head(eucurrent1)
+```
+
+```{r}
+
+opt2<- optimize_constrained_portfolio_reslow_current(data = eucurrent1, low = min_wactual, high = const$max)
+
+saveRDS(opt2, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/results/opt_eu_constx2.rds")
+opt2<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/results/opt_eu_constx2.rds")
+
+```
+
+```{r}
+# optimal current and future EU
+opt_list3<- list()
+opt_list3 <- lapply(list(eucurrent1, eufuture), function(d) {
+  optimize_constrained_portfolio_reslow_current(
+    data = coredata(d),          # Convert xts to matrix
+    low = min_wactual,           # Lower constraint vector
+    high = const$max             # Upper constraint vector
+  )
+})
+names(opt_list3)<- c("Current", "Future")
+
+saveRDS(opt_list3, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_eu3.rds")
+opt_list3<- readRDS("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/results/opt_list_eu3.rds")
+
+```
+
+```{r}
+
+# 2.4.5. Weights ####
+
+# for current and future unconstrained
+for (region in c("Current", "Future")){
+  for(portfolio in c("weights_minvar", "weights_maxmean", "weights_sharpe")){
+    w<- opt_list3[[region]][[portfolio]]
+    w1<- w[w >0.01]*100
+    w2<- data.frame(weight = w1, country = names(w1), region = region) %>% 
+      mutate(tech = ifelse(grepl(".1", country), "Solar", "Wind")) %>%
+      mutate(country = substr(country, start = 1, stop = 2)) %>% print
+    
+    wplot_opt1<- ggplot(w2, aes(y = reorder(country, weight, sum),
+                           x = weight, fill = tech)) +
+      geom_bar(position="stack", stat="identity") +
+      geom_text(aes(label = round(weight, digits = 1)),
+                size = 3, position = position_stack(vjust = 0.5)) +
+      labs(x = "Share of installed capacity (%)", 
+           subtitle = paste(region, portfolio, sep = "")) +
+      # scale_fill_viridis_d(option = "magma") +
+      scale_fill_manual(values = c("Wind" = "#619CFF","Solar" = "#F8766D"),
+                        guide = guide_legend(reverse = TRUE)) +
+      mytheme() + #  "Onshore" =  "#00BA38"
+      theme(axis.title.y = element_blank(),
+            legend.position = c(.8,.2), legend.title = element_blank())
+    write.png(wplot_opt1, paste("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/figures/euopt11", region, portfolio, ".png", sep = ""))
+  }
+}
+
+for(portfolio in c("weights_minvar", "weights_maxmean", "weights_sharpe")){
+  w<- opt2[[portfolio]]
+  w1<- w[w >0.01]*100
+  w2<- data.frame(weight = w1, country = names(w1), region = region) %>% 
+    mutate(tech = ifelse(grepl(".1", country), "Solar", "Wind")) %>%
+    mutate(country = substr(country, start = 1, stop = 2)) %>% print
+  
+  wplot_opt1<- ggplot(w2, aes(y = reorder(country, weight, sum),
+                         x = weight, fill = tech)) +
+    geom_bar(position="stack", stat="identity") +
+    geom_text(aes(label = round(weight, digits = 1)),
+              size = 3, position = position_stack(vjust = 0.5)) +
+    labs(x = "Share of installed capacity (%)", 
+         subtitle = paste(region, portfolio, sep = "")) +
+    # scale_fill_viridis_d(option = "magma") +
+    scale_fill_manual(values = c("Wind" = "#619CFF","Solar" = "#F8766D"),
+                      guide = guide_legend(reverse = TRUE)) +
+    mytheme() + #  "Onshore" =  "#00BA38"
+    theme(axis.title.y = element_blank(),
+          legend.position = c(.8,.2), legend.title = element_blank())
+  write.png(wplot_opt1, paste("C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/code/repack/repack/figures/euFutureConstrainedopt1", 
+                         portfolio, ".png", sep = ""))
+}
+
+# current unconstrained
+wcurrent1<- opt_list3[["Current"]][["weights_sharpe"]]
+wcurrent<- data.frame(weight = wcurrent1*100, country = names(wcurrent1), region = "Current") %>% 
+  mutate(tech = ifelse(grepl(".1", country), "Solar", "Wind")) %>%
+  mutate(country = substr(country, start = 1, stop = 2))
+
+# future unconstrained
+wfuture1<- opt_list3[["Future"]][["weights_sharpe"]]
+wfuture<- data.frame(weight = wfuture1*100, country = names(wfuture1), region = "Future") %>% 
+  mutate(tech = ifelse(grepl(".1", country), "Solar", "Wind")) %>%
+  mutate(country = substr(country, start = 1, stop = 2))
+
+wactual<- cap %>% select(country, Solar = solar_sh, Wind = wind_sh) %>% 
+  gather(tech, weight, - country) %>% mutate(region = "Actual") %>%
+  filter(country %in% eunames) %>%
+  mutate(weight = 100*weight/sum(weight)) 
+
+euweights<- bind_rows(wcurrent, wfuture, wactual) %>% 
+  filter(weight > 0.9) %>%
+  mutate(country = as.factor(country), region = as.factor(region), tech = as.factor(tech)) %>% 
+  as_tibble()
+
+# plot actual, current and future optimal shares
+euwa<- euweights %>% filter(region == "Actual") %>% 
+  ggplot(aes(x = weight, y = reorder(country, weight, sum), fill = tech)) +
+  geom_bar(position="stack", stat="identity") +
+  geom_text(aes(label = round(weight, digits = 1)), size = 3, position = position_stack(vjust = 0.5)) +
+  labs(x = element_blank(), y = element_blank(), subtitle = "a. Actual") +
+  mytheme() + theme(legend.position = c(.66,.33), legend.title = element_blank())
+
+euwb<- euweights %>% filter(region == "Current") %>% 
+  ggplot(aes(x = weight, y = reorder(country, weight, sum), fill = tech)) +
+  geom_bar(position="stack", stat="identity") +
+  geom_text(aes(label = round(weight, digits = 1)), size = 3, position = position_stack(vjust = 0.5)) +
+  labs(x = element_blank(), y = element_blank(), subtitle = "b. Optimal current") +
+  mytheme() + theme(legend.position = "none")
+
+euwc<- euweights %>% filter(region == "Future") %>% 
+  ggplot(aes(x = weight, y = reorder(country, weight, sum), fill = tech)) +
+  geom_bar(position="stack", stat="identity") +
+  geom_text(aes(label = round(weight, digits = 1)), size = 3, position = position_stack(vjust = 0.5)) +
+  labs(x = element_blank(), y = element_blank(),  subtitle = "c. Optimal future") +
+  mytheme() + theme(legend.position = "none")
+
+euw2<- cowplot::ggdraw(grid.arrange(euwa, euwb, euwc, ncol = 3, bottom = "Share of installed capacity (%)")) + 
+  theme(plot.background = element_rect(fill="white", color = NA))
+# Fig8 ####
+write.png(euw2, "C:/Users/victoriadx/Desktop/Victoria/01_Studies/TFM/datos/figures/f82.png", width=10, height=5)
+```
+
+
+
+
